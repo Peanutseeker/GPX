@@ -113,11 +113,11 @@ class NumericalEngine:
         s_curr = dist_arr[1:-1]
         s_next = dist_arr[2:]
         
-        # 2. 向量化计算步长
+        # 向量化计算步长
         h1 = t_curr - t_prev
         h2 = t_next - t_curr
         
-        # 3. 向量化计算 Lagrange 公式 (一次性计算所有中间点)
+        # 向量化计算 Lagrange 公式 (一次性计算所有中间点)
         
         denom = h1 * h2 * (h1 + h2)
         
@@ -131,7 +131,7 @@ class NumericalEngine:
         
         v[1:-1] = term1_raw + term2_raw + term3_raw
         
-        # 4. 边界处理 (一阶差商)
+        # 边界处理 (一阶差商)
         if n >= 2:
             v[0] = (dist_arr[1] - dist_arr[0]) / (time_arr[1] - time_arr[0])
             v[-1] = (dist_arr[-1] - dist_arr[-2]) / (time_arr[-1] - time_arr[-2])
