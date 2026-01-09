@@ -20,6 +20,7 @@ class DataLoader:
         self.lats = []
         self.lons = []
 
+    # 用haversine 公式 计算两点之间的距离
     def _haversine_distance(self, lat1, lon1, lat2, lon2):
         R = 6371000
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -30,6 +31,7 @@ class DataLoader:
 
     def parse(self):
         try:
+            # 用 XML.etree.ElementTree 解析 GPX
             tree = ET.parse(self.file_content)
             root = tree.getroot()
             ns = {'gpx': 'http://www.topografix.com/GPX/1/1'}
@@ -40,6 +42,7 @@ class DataLoader:
             
             if not points: return None, None, None, None
 
+            # 这里是为了兼容不同的格式
             parsed_data = []
             for trkpt in points:
                 lat = float(trkpt.get('lat'))
@@ -69,6 +72,7 @@ class DataLoader:
             self.lats = [parsed_data[0][0]]
             self.lons = [parsed_data[0][1]]
 
+            # 计算每两个点之间的时间差和距离
             for i in range(1, len(parsed_data)):
                 prev = parsed_data[i-1]
                 curr = parsed_data[i]
@@ -90,35 +94,36 @@ class DataLoader:
             st.error(f"解析错误: {e}")
             return None, None, None, None
 
-# ==========================================
-# 2. 数值计算引擎 (NumericalEngine) - 保持不变
-# ==========================================
+
 class NumericalEngine:
     @staticmethod
-    def calculate_velocity_high_precision(time_arr, dist_arr):
+    def calculate_velocity(time_arr, dist_arr):
         n = len(time_arr)
         v = np.zeros(n)
         for i in range(1, n - 1):
             h1 = time_arr[i] - time_arr[i-1]
             h2 = time_arr[i+1] - time_arr[i]
             if h1 > 0 and h2 > 0:
+                # lagrange 插值后求导
                 s_prev, s_curr, s_next = dist_arr[i-1], dist_arr[i], dist_arr[i+1]
                 term1 = - (h2 / (h1 * (h1 + h2))) * s_prev
                 term2 =   ((h2 - h1) / (h1 * h2)) * s_curr
                 term3 =   (h1 / (h2 * (h1 + h2))) * s_next
                 v[i] = term1 + term2 + term3
         if n >= 2:
+            # 退化到一阶差商求导
             v[0] = (dist_arr[1]-dist_arr[0])/(time_arr[1]-time_arr[0])
             v[n-1] = (dist_arr[n-1]-dist_arr[n-2])/(time_arr[n-1]-time_arr[n-2])
         return v
 
     @staticmethod
-    def calculate_cumulative_distance(time_arr, v_arr):
+    def calculate_integral_distance(time_arr, v_arr):
         n = len(time_arr)
         s_calc = np.zeros(n)
         current_s = 0.0
         for i in range(1, n):
             dt = time_arr[i] - time_arr[i-1]
+            # 复化求积公式
             dS = (v_arr[i] + v_arr[i-1]) * dt / 2.0
             current_s += dS
             s_calc[i] = current_s
@@ -133,11 +138,10 @@ class NumericalEngine:
         calories = (total_dist / 1000.0) * 25
         return avg_speed_kph, max_speed_kph, moving_speed_kph, calories
 
-# ==========================================
-# 3. 界面显示 (AppUI) - 重点修改了这里
-# ==========================================
+# 说明: 使用了 AI 辅助写前端，问过了是批准的
+
 def main():
-    st.set_page_config(page_title="数值分析大作业 - 轨迹分析", layout="wide")
+    st.set_page_config(page_title="数值分析大作业 - GPX 分析", layout="wide")
     
     st.sidebar.header("📂 数据与设置")
     uploaded_file = st.sidebar.file_uploader("上传 GPX 文件", type=["gpx"])
@@ -156,8 +160,8 @@ def main():
 
         # 2. 核心计算
         start_cpu = time.time()
-        v_calc = NumericalEngine.calculate_velocity_high_precision(t_arr, s_real)
-        s_integrated = NumericalEngine.calculate_cumulative_distance(t_arr, v_calc)
+        v_calc = NumericalEngine.calculate_velocity(t_arr, s_real)
+        s_integrated = NumericalEngine.calculate_integral_distance(t_arr, v_calc)
         end_cpu = time.time()
         compute_time = (end_cpu - start_cpu) * 1000
 
