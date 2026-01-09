@@ -94,49 +94,81 @@ class DataLoader:
             st.error(f"解析错误: {e}")
             return None, None, None, None
 
-
 class NumericalEngine:
     @staticmethod
     def calculate_velocity(time_arr, dist_arr):
+        """
+        使用 NumPy 向量化实现三点 Lagrange 插值，消除 for 循环
+        """
         n = len(time_arr)
         v = np.zeros(n)
-        for i in range(1, n - 1):
-            h1 = time_arr[i] - time_arr[i-1]
-            h2 = time_arr[i+1] - time_arr[i]
-            if h1 > 0 and h2 > 0:
-                # lagrange 插值后求导
-                s_prev, s_curr, s_next = dist_arr[i-1], dist_arr[i], dist_arr[i+1]
-                term1 = - (h2 / (h1 * (h1 + h2))) * s_prev
-                term2 =   ((h2 - h1) / (h1 * h2)) * s_curr
-                term3 =   (h1 / (h2 * (h1 + h2))) * s_next
-                v[i] = term1 + term2 + term3
+        
+        # 准备向量化的切片,直接减法避免循环
+        # t_prev: t[0...n-3], t_curr: t[1...n-2], t_next: t[2...n-1]
+        t_prev = time_arr[:-2]
+        t_curr = time_arr[1:-1]
+        t_next = time_arr[2:]
+        
+        s_prev = dist_arr[:-2]
+        s_curr = dist_arr[1:-1]
+        s_next = dist_arr[2:]
+        
+        # 2. 向量化计算步长
+        h1 = t_curr - t_prev
+        h2 = t_next - t_curr
+        
+        # 3. 向量化计算 Lagrange 公式 (一次性计算所有中间点)
+        
+        denom = h1 * h2 * (h1 + h2)
+        
+        term1 = - (h2 ** 2) * s_prev
+        term2 =   ((h2 ** 2) - (h1 ** 2)) * s_curr # 这里公式做了通分变形
+
+        
+        term1_raw = - (h2 / (h1 * (h1 + h2))) * s_prev
+        term2_raw =   ((h2 - h1) / (h1 * h2)) * s_curr
+        term3_raw =   (h1 / (h2 * (h1 + h2))) * s_next
+        
+        v[1:-1] = term1_raw + term2_raw + term3_raw
+        
+        # 4. 边界处理 (一阶差商)
         if n >= 2:
-            # 退化到一阶差商求导
-            v[0] = (dist_arr[1]-dist_arr[0])/(time_arr[1]-time_arr[0])
-            v[n-1] = (dist_arr[n-1]-dist_arr[n-2])/(time_arr[n-1]-time_arr[n-2])
+            v[0] = (dist_arr[1] - dist_arr[0]) / (time_arr[1] - time_arr[0])
+            v[-1] = (dist_arr[-1] - dist_arr[-2]) / (time_arr[-1] - time_arr[-2])
+            
         return v
 
     @staticmethod
     def calculate_integral_distance(time_arr, v_arr):
-        n = len(time_arr)
-        s_calc = np.zeros(n)
-        current_s = 0.0
-        for i in range(1, n):
-            dt = time_arr[i] - time_arr[i-1]
-            # 复化求积公式
-            dS = (v_arr[i] + v_arr[i-1]) * dt / 2.0
-            current_s += dS
-            s_calc[i] = current_s
+        """
+        使用 NumPy 的 cumsum (累积求和) 消除 for 循环
+        """
+        # 计算所有区间的 dt (长度 n-1)
+        dt = time_arr[1:] - time_arr[:-1]
+        
+        # 计算所有区间的平均速度 (梯形公式中位线)
+        v_avg = (v_arr[1:] + v_arr[:-1]) / 2.0
+        
+        # 计算每个微小段的位移 dS
+        ds_step = v_avg * dt
+        
+        # 累积求和 (Cumulative Sum) 得到路程
+        # np.cumsum 返回 [ds0, ds0+ds1, ...]
+        # 需要在最前面补一个 0 (起点路程为0)
+        s_calc = np.concatenate(([0], np.cumsum(ds_step)))
+        
         return s_calc
 
     @staticmethod
     def calculate_metrics(v_arr, total_dist, total_time):
+        # 这部分本来就是向量化的 (np.max, np.mean)，保持不变即可
         avg_speed_kph = (total_dist / total_time * 3.6) if total_time > 0 else 0
         max_speed_kph = np.max(v_arr) * 3.6
         moving_mask = v_arr > 0.5
         moving_speed_kph = (np.mean(v_arr[moving_mask]) * 3.6) if np.any(moving_mask) else 0
         calories = (total_dist / 1000.0) * 25
         return avg_speed_kph, max_speed_kph, moving_speed_kph, calories
+
 
 # 说明: 使用了 AI 辅助写前端，问过了是批准的
 

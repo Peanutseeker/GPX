@@ -49,7 +49,6 @@ GPX/
 ├── README.md          # 项目说明文档
 ├── .gitignore         # Git 忽略文件配置
 └── samples/           # 示例 GPX 文件
-    └── gpx1.gpx
 ```
 
 ## 数值算法
