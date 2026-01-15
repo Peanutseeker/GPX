@@ -7,11 +7,9 @@ from datetime import datetime
 import xml.etree.ElementTree as ET
 import folium
 from streamlit_folium import st_folium
-import plotly.express as px  # 新增：用于绘制可交互的图表
+import plotly.express as px  
 
-# ==========================================
-# 1. 数据加载类 (DataLoader) - 保持不变
-# ==========================================
+
 class DataLoader:
     def __init__(self, file_content):
         self.file_content = file_content
@@ -54,6 +52,7 @@ class DataLoader:
                     try:
                         t_obj = datetime.fromisoformat(t_str)
                     except AttributeError:
+                        # 兼容旧版本的python
                         if '.' in t_str:
                             t_obj = datetime.strptime(t_str, "%Y-%m-%dT%H:%M:%S.%f")
                         else:
@@ -94,16 +93,21 @@ class DataLoader:
             st.error(f"解析错误: {e}")
             return None, None, None, None
 
+# 说明： 在这里加了处理暂停、信号丢失的逻辑
+# 分析原数据发现，静止时间段记录点会被直接过滤，形成一个非常长的时间gap
+# 因此根据时间差判断这段时间物体是否是静止状态
 class NumericalEngine:
+    # 定义判定为“暂停”的时间阈值 ，此处为 15 秒,常量因此大写
+    STATIC_GAP = 15.0 
+
     @staticmethod
     def calculate_velocity(time_arr, dist_arr):
         """
-        使用 NumPy 向量化实现三点 Lagrange 插值，消除 for 循环
+        使用 NumPy 向量化实现三点 Lagrange 插值，增加了对“静止时间断层”的过滤
         """
         n = len(time_arr)
         v = np.zeros(n)
         
-        # 准备向量化的切片,直接减法避免循环
         # t_prev: t[0...n-3], t_curr: t[1...n-2], t_next: t[2...n-1]
         t_prev = time_arr[:-2]
         t_curr = time_arr[1:-1]
@@ -113,35 +117,47 @@ class NumericalEngine:
         s_curr = dist_arr[1:-1]
         s_next = dist_arr[2:]
         
-        # 向量化计算步长
+        # 向量直接作差计算步长
         h1 = t_curr - t_prev
         h2 = t_next - t_curr
         
-        # 向量化计算 Lagrange 公式 (一次性计算所有中间点)
-        
-        denom = h1 * h2 * (h1 + h2)
-        
-        term1 = - (h2 ** 2) * s_prev
-        term2 =   ((h2 ** 2) - (h1 ** 2)) * s_curr # 这里公式做了通分变形
-
-        
+        # Lagrange 插值多项式在中间点的导数
+        # 由于h1 和 h2 不一定相等，因此不能使用中间差商
         term1_raw = - (h2 / (h1 * (h1 + h2))) * s_prev
         term2_raw =   ((h2 - h1) / (h1 * h2)) * s_curr
         term3_raw =   (h1 / (h2 * (h1 + h2))) * s_next
         
-        v[1:-1] = term1_raw + term2_raw + term3_raw
+        v_middle = term1_raw + term2_raw + term3_raw
         
-        # 边界处理 (一阶差商)
+        # 修改：
+        # 如果前一段(h1)或后一段(h2)的时间差超过阈值，说明插值跨越了暂停点
+        # 此时物理上的“连续性”假设失效，我们强制将该点的速度设为 0
+        gap_mask = (h1 > NumericalEngine.STATIC_GAP) | (h2 > NumericalEngine.STATIC_GAP)
+        v_middle[gap_mask] = 0
+        
+        # 赋值回主数组
+        v[1:-1] = v_middle
+        
+        # 边界处理：首位直接用一阶差商
         if n >= 2:
-            v[0] = (dist_arr[1] - dist_arr[0]) / (time_arr[1] - time_arr[0])
-            v[-1] = (dist_arr[-1] - dist_arr[-2]) / (time_arr[-1] - time_arr[-2])
+            dt_start = time_arr[1] - time_arr[0]
+            dt_end = time_arr[-1] - time_arr[-2]
             
+            # 只有当边界没有断层时才计算，否则设为0
+            if dt_start <= NumericalEngine.STATIC_GAP:
+                v[0] = (dist_arr[1] - dist_arr[0]) / dt_start
+            
+            if dt_end <= NumericalEngine.STATIC_GAP:
+                v[-1] = (dist_arr[-1] - dist_arr[-2]) / dt_end
+        
+        # 给速度加上限制预防异常值，假设骑车的时候最大速度不超过30m/s
+        v = np.clip(v, 0, 30)            
         return v
 
     @staticmethod
     def calculate_integral_distance(time_arr, v_arr):
         """
-        使用 NumPy 的 cumsum (累积求和) 消除 for 循环
+        使用梯形法则积分，遇到很长的“静止区间”时强行让这段路程为0
         """
         # 计算所有区间的 dt (长度 n-1)
         dt = time_arr[1:] - time_arr[:-1]
@@ -152,20 +168,28 @@ class NumericalEngine:
         # 计算每个微小段的位移 dS
         ds_step = v_avg * dt
         
-        # 累积求和 (Cumulative Sum) 得到路程
-        # np.cumsum 返回 [ds0, ds0+ds1, ...]
-        # 需要在最前面补一个 0 (起点路程为0)
+        # 如果某一段的时间 dt 超过了阈值(比如15秒)，说明这是暂停期间
+        # 哪怕此时 v_avg 不为0 (因为漂移)，我们也不把这段路程算进去
+        # 强制将这段的位移增量置为 0
+        gap_mask = dt > NumericalEngine.STATIC_GAP
+        ds_step[gap_mask] = 0
+        
+        # 累积求和
         s_calc = np.concatenate(([0], np.cumsum(ds_step)))
         
         return s_calc
 
     @staticmethod
     def calculate_metrics(v_arr, total_dist, total_time):
-        # 这部分本来就是向量化的 (np.max, np.mean)，保持不变即可
+        # 注意：这里的 total_time 包含了休息时间。
+        # 如果想计算“运动平均速度”，分母应该减去休息时间，不过这里先不修改
         avg_speed_kph = (total_dist / total_time * 3.6) if total_time > 0 else 0
         max_speed_kph = np.max(v_arr) * 3.6
-        moving_mask = v_arr > 0.5
+        
+        # 只有大于 1km/h 才算移动，且去除了异常大值
+        moving_mask = (v_arr > 0.3) & (v_arr < 38) 
         moving_speed_kph = (np.mean(v_arr[moving_mask]) * 3.6) if np.any(moving_mask) else 0
+        
         calories = (total_dist / 1000.0) * 25
         return avg_speed_kph, max_speed_kph, moving_speed_kph, calories
 
